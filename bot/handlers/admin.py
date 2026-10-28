@@ -67,6 +67,25 @@ async def cmd_modpack_info(message: Message, session: AsyncSession) -> None:
     await message.answer(text, parse_mode="HTML")
 
 
+@router.message(Command("sync_mods"))
+async def cmd_sync_mods(message: Message, session: AsyncSession) -> None:
+    """Scan data/modpack/ folder on disk and synchronize database records."""
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к этой команде.")
+        return
+
+    await message.answer("🔄 <i>Сканирование папки data/modpack/ и синхронизация файлов...</i>", parse_mode="HTML")
+    res = await ModpackService.sync_disk_files(session, message.from_user.id)
+    text = (
+        "✅ <b>Синхронизация файлов сборки завершена!</b>\n\n"
+        f"➕ Добавлено новых файлов: <b>{res['added']}</b>\n"
+        f"🔄 Обновлено измененных: <b>{res['updated']}</b>\n"
+        f"🗑️ Удалено отсутствующих: <b>{res['deleted']}</b>\n"
+        f"📦 Всего файлов в сборке: <b>{res['total']}</b>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 # ---------------- Upload Mod / File ---------------- #
 
 

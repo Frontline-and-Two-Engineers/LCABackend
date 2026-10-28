@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import config
@@ -79,7 +80,7 @@ class ModpackService:
         for f in files:
             file_entries.append({
                 "path": f.relative_path,
-                "url": f"{clean_base}/api/modpack/files/{f.relative_path}",
+                "url": f"{clean_base}/api/modpack/files/{quote(f.relative_path, safe='/')}",
                 "sha256": f.sha256,
                 "size": f.size,
             })
@@ -96,6 +97,14 @@ class ModpackService:
             _, target_path = ModpackService.normalize_and_validate_path(relative_path)
             if target_path.is_file():
                 return target_path
+
+            # Fallback for client-base.zip in data/ root
+            clean_name = relative_path.strip().lstrip("/")
+            if clean_name.lower() in {"client-base.zip", "client.zip"}:
+                fallback = (config.modpack_dir.parent / clean_name).resolve()
+                if fallback.is_file():
+                    return fallback
+
             return None
         except ModpackSecurityError:
             return None
@@ -226,4 +235,77 @@ class ModpackService:
             "total_size": total_size or 0,
             "total_size_mb": round((total_size or 0) / (1024 * 1024), 2),
             "last_updated": last_updated,
+        }
+
+    @staticmethod
+    async def sync_disk_files(session: AsyncSession, uploaded_by_telegram_id: int = 0) -> dict[str, int]:
+        """
+        Scan MODPACK_DIR on disk, register any newly added files, update changed files,
+        and clean up database entries for files deleted from disk.
+        """
+        base_dir = config.modpack_dir.resolve()
+        if not base_dir.exists():
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+        disk_files: dict[str, Path] = {}
+        for file_path in base_dir.rglob("*"):
+            if file_path.is_file():
+                if any(part.startswith(".") for part in file_path.parts):
+                    continue
+                rel_path = file_path.relative_to(base_dir).as_posix()
+                # Exclude client base archive from modpack manifest (it's downloaded by ClientDownloader, not SyncEngine)
+                if rel_path.lower() in {"client-base.zip", "client.zip"}:
+                    continue
+                disk_files[rel_path] = file_path
+
+        stmt = select(ModpackFile)
+        result = await session.execute(stmt)
+        db_files = {f.relative_path: f for f in result.scalars().all()}
+
+        added = 0
+        updated = 0
+        deleted = 0
+        now = utc_now()
+
+        for rel_path, path_obj in disk_files.items():
+            content = path_obj.read_bytes()
+            sha256 = hashlib.sha256(content).hexdigest()
+            size = len(content)
+
+            if rel_path in db_files:
+                record = db_files[rel_path]
+                if record.sha256 != sha256 or record.size != size:
+                    record.sha256 = sha256
+                    record.size = size
+                    record.uploaded_at = now
+                    updated += 1
+            else:
+                new_file = ModpackFile(
+                    relative_path=rel_path,
+                    sha256=sha256,
+                    size=size,
+                    uploaded_at=now,
+                    uploaded_by_telegram_id=uploaded_by_telegram_id,
+                )
+                session.add(new_file)
+                added += 1
+
+        for rel_path, record in db_files.items():
+            if rel_path not in disk_files:
+                await session.delete(record)
+                deleted += 1
+
+        await session.commit()
+        logger.info(
+            "Modpack disk sync complete: %d added, %d updated, %d deleted, %d total",
+            added,
+            updated,
+            deleted,
+            len(disk_files),
+        )
+        return {
+            "added": added,
+            "updated": updated,
+            "deleted": deleted,
+            "total": len(disk_files),
         }

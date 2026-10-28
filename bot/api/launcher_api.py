@@ -183,13 +183,7 @@ async def manifest_handler(request: web.Request) -> web.Response:
     GET /api/modpack/manifest.json
     Returns modpack manifest compatible with LCALauncher SyncEngine.
     """
-    # Use request host if configured base URL is default localhost
-    base_url = config.api_base_url
-    if not base_url or "localhost" in base_url:
-        scheme = request.scheme
-        host = request.host
-        base_url = f"{scheme}://{host}"
-
+    base_url = _get_effective_base_url(request)
     async with get_db_session() as session:
         manifest = await ModpackService.get_manifest(session, base_url)
         return web.json_response(manifest)
@@ -198,7 +192,7 @@ async def manifest_handler(request: web.Request) -> web.Response:
 async def download_file_handler(request: web.Request) -> web.StreamResponse:
     """
     GET /api/modpack/files/{path:.*}
-    Serves modpack binary file directly for downloading.
+    Serves modpack binary file or client-base.zip directly for downloading.
     """
     relative_path = request.match_info.get("path", "")
     if not relative_path:
@@ -214,12 +208,34 @@ async def download_file_handler(request: web.Request) -> web.StreamResponse:
             status=404,
         )
 
+    content_type = "application/zip" if disk_path.name.endswith(".zip") else "application/octet-stream"
     return web.FileResponse(
         path=disk_path,
         chunk_size=65536,
         headers={
-            "Content-Type": "application/octet-stream",
+            "Content-Type": content_type,
             "Content-Disposition": f'attachment; filename="{disk_path.name}"',
+        },
+    )
+
+
+async def download_client_base_handler(request: web.Request) -> web.StreamResponse:
+    """
+    GET /api/client-base.zip or /client-base.zip alias.
+    """
+    disk_path = ModpackService.get_file_disk_path("client-base.zip")
+    if not disk_path:
+        return web.json_response(
+            {"error": "client_base_not_found", "errorMessage": "Архив client-base.zip не найден на сервере"},
+            status=404,
+        )
+
+    return web.FileResponse(
+        path=disk_path,
+        chunk_size=65536,
+        headers={
+            "Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="client-base.zip"',
         },
     )
 
@@ -583,14 +599,17 @@ def create_api_app() -> web.Application:
     app.router.add_get("/api/auth/validate", validate_token_handler)
     app.router.add_post("/api/auth/logout", logout_handler)
 
-    # Modpack routes
+    # Modpack & Base Client routes
     app.router.add_get("/api/modpack/manifest.json", manifest_handler)
     app.router.add_get("/api/modpack/files/{path:.*}", download_file_handler)
+    app.router.add_get("/api/client-base.zip", download_client_base_handler)
+    app.router.add_get("/client-base.zip", download_client_base_handler)
     app.router.add_post("/api/modpack/upload", upload_file_handler)
     app.router.add_delete("/api/modpack/files/{path:.*}", delete_file_handler)
     app.router.add_post("/api/modpack/version", set_version_handler)
 
     # Yggdrasil Session Server routes (Minecraft dedicated server & client auth)
+    app.router.add_get("/", yggdrasil_metadata_handler)
     app.router.add_get("/api/yggdrasil", yggdrasil_metadata_handler)
     app.router.add_post("/sessionserver/session/minecraft/join", yggdrasil_join_handler)
     app.router.add_post("/api/yggdrasil/sessionserver/session/minecraft/join", yggdrasil_join_handler)

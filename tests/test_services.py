@@ -208,3 +208,43 @@ def test_bot_code_rate_limiter():
         assert limiter.is_allowed(user_id) is True
 
     assert limiter.is_allowed(user_id) is False
+
+
+@pytest.mark.asyncio
+async def test_automatic_database_column_migration(tmp_path):
+    """Verify init_db automatically adds missing columns to existing tables."""
+    import sqlite3
+    from bot.config import config
+    from bot.db.engine import init_db, configure_engine, close_db
+
+    mig_db = tmp_path / "legacy.db"
+    # Create old table without skin_hash, skin_model, cape_hash
+    con = sqlite3.connect(mig_db)
+    con.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id BIGINT UNIQUE NOT NULL,
+            username VARCHAR(16) UNIQUE NOT NULL,
+            uuid VARCHAR(36) UNIQUE NOT NULL,
+            created_at DATETIME NOT NULL,
+            is_banned BOOLEAN NOT NULL
+        )
+        """
+    )
+    con.commit()
+    con.close()
+
+    # Reconfigure engine to point to legacy db
+    configure_engine(f"sqlite+aiosqlite:///{mig_db}")
+    await init_db()
+
+    # Verify columns were added automatically
+    con2 = sqlite3.connect(mig_db)
+    cols = [col[1] for col in con2.execute("PRAGMA table_info(users)").fetchall()]
+    con2.close()
+    await close_db()
+
+    assert "skin_hash" in cols
+    assert "skin_model" in cols
+    assert "cape_hash" in cols

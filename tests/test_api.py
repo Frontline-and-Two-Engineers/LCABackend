@@ -174,6 +174,87 @@ async def test_modpack_upload_manifest_download_flow():
 
 
 @pytest.mark.asyncio
+async def test_modpack_disk_sync_and_download_with_spaces():
+    """Verify that manually dropping files with spaces into data/modpack/ syncs and downloads."""
+    from bot.services.modpack_service import ModpackService
+
+    app = create_api_app()
+    client = TestClient(TestServer(app))
+    await client.start_server()
+
+    try:
+        # 1. Place file manually on disk
+        mods_dir = config.modpack_dir / "mods"
+        mods_dir.mkdir(parents=True, exist_ok=True)
+        custom_mod = mods_dir / "Just Enough Items 1.20.jar"
+        mod_content = b"PK\x03\x04JEIModData987654321"
+        custom_mod.write_bytes(mod_content)
+
+        # 2. Run disk sync
+        async with get_db_session() as session:
+            res = await ModpackService.sync_disk_files(session)
+            assert res["added"] >= 1
+
+        # 3. Request manifest
+        man_resp = await client.get("/api/modpack/manifest.json")
+        assert man_resp.status == 200
+        man_data = await man_resp.json()
+        assert len(man_data["files"]) >= 1
+
+        found_file = next(f for f in man_data["files"] if "Just Enough Items" in f["path"])
+        assert found_file["path"] == "mods/Just Enough Items 1.20.jar"
+        assert "%20" in found_file["url"]
+
+        # 4. Download file using the URL from manifest
+        download_url = found_file["url"].replace("http://testserver", "")
+        dl_resp = await client.get(download_url)
+        assert dl_resp.status == 200
+        dl_bytes = await dl_resp.read()
+        assert dl_bytes == mod_content
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_base_zip_download_and_manifest_exclusion():
+    """Verify client-base.zip is downloadable via API but excluded from modpack manifest."""
+    from bot.services.modpack_service import ModpackService
+
+    app = create_api_app()
+    client = TestClient(TestServer(app))
+    await client.start_server()
+
+    try:
+        # Create client-base.zip in modpack dir
+        client_base_file = config.modpack_dir / "client-base.zip"
+        fake_zip_bytes = b"PK\x03\x04FakeClientBaseArchiveContent123"
+        client_base_file.write_bytes(fake_zip_bytes)
+
+        # Run sync
+        async with get_db_session() as session:
+            await ModpackService.sync_disk_files(session)
+
+        # Check manifest -> client-base.zip MUST NOT be listed in files
+        man_resp = await client.get("/api/modpack/manifest.json")
+        assert man_resp.status == 200
+        manifest = await man_resp.json()
+        manifest_paths = [f["path"] for f in manifest["files"]]
+        assert "client-base.zip" not in manifest_paths
+
+        # Download via /api/modpack/files/client-base.zip
+        dl_resp1 = await client.get("/api/modpack/files/client-base.zip")
+        assert dl_resp1.status == 200
+        assert (await dl_resp1.read()) == fake_zip_bytes
+
+        # Download via alias /api/client-base.zip
+        dl_resp2 = await client.get("/api/client-base.zip")
+        assert dl_resp2.status == 200
+        assert (await dl_resp2.read()) == fake_zip_bytes
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_api_rate_limiting():
     """Verify rate limit of 10 requests per minute on request-code."""
     app = create_api_app()

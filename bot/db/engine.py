@@ -46,7 +46,7 @@ def configure_engine(database_url: str) -> None:
 
 
 async def init_db() -> None:
-    """Initialize database tables and create parent directories if needed."""
+    """Initialize database tables and run automatic lightweight column migrations."""
     if "sqlite" in config.database_url:
         db_path_str = config.database_url.split("///")[-1]
         db_path = Path(db_path_str).resolve()
@@ -55,7 +55,25 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         logger.info("Initializing database tables...")
         await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables initialized successfully.")
+
+        # Run automatic migrations for new columns
+        def _check_and_migrate_columns(sync_conn):
+            from sqlalchemy import inspect, text
+            inspector = inspect(sync_conn)
+            if "users" in inspector.get_table_names():
+                existing_cols = {c["name"] for c in inspector.get_columns("users")}
+                if "skin_hash" not in existing_cols:
+                    logger.info("Migrating database: adding 'skin_hash' column to users table...")
+                    sync_conn.execute(text("ALTER TABLE users ADD COLUMN skin_hash VARCHAR(64)"))
+                if "skin_model" not in existing_cols:
+                    logger.info("Migrating database: adding 'skin_model' column to users table...")
+                    sync_conn.execute(text("ALTER TABLE users ADD COLUMN skin_model VARCHAR(8) DEFAULT 'classic' NOT NULL"))
+                if "cape_hash" not in existing_cols:
+                    logger.info("Migrating database: adding 'cape_hash' column to users table...")
+                    sync_conn.execute(text("ALTER TABLE users ADD COLUMN cape_hash VARCHAR(64)"))
+
+        await conn.run_sync(_check_and_migrate_columns)
+        logger.info("Database tables and columns initialized successfully.")
 
 
 async def close_db() -> None:

@@ -15,6 +15,7 @@ from bot.middlewares.db_session import DbSessionMiddleware
 from bot.handlers import get_main_router
 from bot.api.launcher_api import create_api_app
 from bot.services.code_service import CodeService
+from bot.services.modpack_service import ModpackService
 
 # Configure structured logging
 logging.basicConfig(
@@ -47,6 +48,17 @@ async def main() -> None:
 
     # 1. Initialize database tables
     await init_db()
+
+    # Sync modpack directory files with database
+    async with get_db_session() as session:
+        sync_res = await ModpackService.sync_disk_files(session)
+        logger.info(
+            "Modpack synced on startup: %d files registered (added: %d, updated: %d, deleted: %d)",
+            sync_res["total"],
+            sync_res["added"],
+            sync_res["updated"],
+            sync_res["deleted"],
+        )
 
     # 2. Start HTTP REST API server (aiohttp)
     api_app = create_api_app()
