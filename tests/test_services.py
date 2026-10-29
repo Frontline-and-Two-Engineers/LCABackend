@@ -248,3 +248,42 @@ async def test_automatic_database_column_migration(tmp_path):
     assert "skin_hash" in cols
     assert "skin_model" in cols
     assert "cape_hash" in cols
+
+
+def test_telethon_mtproto_client_creation(tmp_path, monkeypatch):
+    """Verify Telethon client creation with native MTProto proxy configuration."""
+    from bot.config import config
+    from bot.telegram_bot import create_telegram_client
+    from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
+
+    monkeypatch.setattr(config, "api_id", 123456)
+    monkeypatch.setattr(config, "api_hash", "0123456789abcdef0123456789abcdef")
+    monkeypatch.setattr(config, "mtproto_proxy_host", "proxy.telegram.org")
+    monkeypatch.setattr(config, "mtproto_proxy_port", 443)
+    monkeypatch.setattr(config, "mtproto_proxy_secret", "ee0123456789abcdef0123456789abcdef")
+    monkeypatch.setattr(config, "data_dir", tmp_path)
+
+    client = create_telegram_client()
+    assert client.api_id == 123456
+    assert client.api_hash == "0123456789abcdef0123456789abcdef"
+    assert client._connection == ConnectionTcpMTProxyRandomizedIntermediate
+
+
+def test_state_manager_wizard_flow():
+    """Verify state manager stores and clears multi-step FSM states."""
+    from bot.services.state_service import state_manager
+
+    user_id = 777
+    state_manager.clear(user_id)
+    assert state_manager.get_state(user_id) is None
+
+    state_manager.set_state(user_id, "waiting_for_username")
+    assert state_manager.get_state(user_id) == "waiting_for_username"
+
+    state_manager.update_data(user_id, temp_nick="Miner123")
+    data = state_manager.get_data(user_id)
+    assert data["temp_nick"] == "Miner123"
+
+    state_manager.clear(user_id)
+    assert state_manager.get_state(user_id) is None
+    assert state_manager.get_data(user_id) == {}

@@ -23,8 +23,36 @@ def _parse_admin_ids(raw_ids: str) -> set[int]:
 
 @dataclass
 class Config:
-    # Telegram Bot
-    bot_token: str = field(default_factory=lambda: os.getenv("BOT_TOKEN", ""))
+    # Telegram Bot & MTProto
+    bot_token: str = field(default_factory=lambda: os.getenv("BOT_TOKEN", "").strip())
+    api_id: int = field(
+        default_factory=lambda: int(os.getenv("API_ID", os.getenv("TG_API_ID", "0")) or "0")
+    )
+    api_hash: str = field(
+        default_factory=lambda: os.getenv("API_HASH", os.getenv("TG_API_HASH", "")).strip()
+    )
+
+    # MTProto Proxy settings (tg://proxy?server=...&port=...&secret=...)
+    mtproto_proxy_host: str = field(
+        default_factory=lambda: os.getenv("MTPROTO_PROXY_HOST", os.getenv("MTPROXY_HOST", "")).strip()
+    )
+    mtproto_proxy_port: int = field(
+        default_factory=lambda: int(os.getenv("MTPROTO_PROXY_PORT", os.getenv("MTPROXY_PORT", "0")) or "0")
+    )
+    mtproto_proxy_secret: str = field(
+        default_factory=lambda: os.getenv("MTPROTO_PROXY_SECRET", os.getenv("MTPROXY_SECRET", "")).strip()
+    )
+
+    # General SOCKS5 / HTTP Proxy (fallback)
+    telegram_proxy: str = field(
+        default_factory=lambda: os.getenv("TELEGRAM_PROXY", os.getenv("PROXY_URL", "")).strip()
+    )
+    telegram_api_server: str = field(
+        default_factory=lambda: os.getenv("TELEGRAM_API_SERVER", "").strip().rstrip("/")
+    )
+
+    # Storage Directories
+    data_dir: Path = field(default_factory=lambda: (BASE_DIR / "data").resolve())
 
     # JWT & Security
     jwt_secret: str = field(

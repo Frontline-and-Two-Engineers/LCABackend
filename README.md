@@ -35,11 +35,30 @@ cp .env.example .env
 Отредактируйте `.env`:
 ```env
 BOT_TOKEN=123456789:ABCDEFghijklmnopqrstuvwxyz1234567
+
+# Native MTProto (Telethon) — прямое подключение к Telegram DC
+# Получите бесплатно на https://my.telegram.org -> API development tools
+API_ID=12345678
+API_HASH=0123456789abcdef0123456789abcdef
+
+# (Опционально) Нативный MTProto-прокси (tg://proxy?server=...&port=...&secret=...)
+# MTPROTO_PROXY_HOST=proxy.example.com
+# MTPROTO_PROXY_PORT=443
+# MTPROTO_PROXY_SECRET=ee0123456789abcdef0123456789abcdef
+
+# (Опционально) Резервный SOCKS5 / HTTP прокси
+# TELEGRAM_PROXY=socks5://127.0.0.1:1080
+
 JWT_SECRET=generate-a-strong-secret-key
 ADMIN_API_TOKEN=super-secret-admin-token
 ADMIN_TELEGRAM_IDS=123456789
 API_BASE_URL=http://localhost:8080
 ```
+
+#### Настройка нативного MTProto и MTProxy:
+- **Прямое соединение без блокировок**: Бот работает по бинарному протоколу MTProto напрямую с дата-центрами Telegram.
+- **Поддержка MTProto-прокси с секретом**: Поддерживаются любые MTProxy (включая obfuscated/randomized `ee...` и `dd...` секреты).
+- **Файлы до 2 ГБ**: Снято ограничение 20 МБ на размер файлов при загрузке модов и архивов сборки через бота.
 
 ### 4. Запуск сервера и бота
 ```bash

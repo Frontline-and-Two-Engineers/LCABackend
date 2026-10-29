@@ -5,17 +5,13 @@ import logging
 import signal
 import sys
 from aiohttp import web
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
 from bot.config import config
 from bot.db.engine import init_db, close_db, get_db_session
-from bot.middlewares.db_session import DbSessionMiddleware
-from bot.handlers import get_main_router
 from bot.api.launcher_api import create_api_app
 from bot.services.code_service import CodeService
 from bot.services.modpack_service import ModpackService
+from bot.telegram_bot import create_telegram_client, setup_bot_handlers
 
 # Configure structured logging
 logging.basicConfig(
@@ -72,13 +68,12 @@ async def main() -> None:
     # 3. Start background cleanup task
     cleanup_task = asyncio.create_task(periodic_code_cleanup())
 
-    # 4. Check Telegram Bot Token
+    # 4. Check Telegram Bot Credentials
     if not config.bot_token:
         logger.warning(
             "⚠️ BOT_TOKEN is not set in environment or .env! "
-            "Telegram Bot polling is disabled. API server is running."
+            "Telegram Bot is disabled. API server is running."
         )
-        # Keep API server running indefinitely
         try:
             stop_event = asyncio.Event()
             await stop_event.wait()
@@ -91,28 +86,40 @@ async def main() -> None:
             logger.info("Shutdown completed.")
         return
 
-    # 5. Initialize aiogram Bot & Dispatcher
-    bot = Bot(
-        token=config.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    dp = Dispatcher()
+    if not config.api_id or not config.api_hash:
+        logger.warning(
+            "⚠️ API_ID or API_HASH is missing in .env! "
+            "To connect via native MTProto, get API_ID and API_HASH from https://my.telegram.org. "
+            "API server is running."
+        )
+        try:
+            stop_event = asyncio.Event()
+            await stop_event.wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            cleanup_task.cancel()
+            await runner.cleanup()
+            await close_db()
+            logger.info("Shutdown completed.")
+        return
 
-    # Register Middlewares
-    dp.update.middleware(DbSessionMiddleware())
+    # 5. Initialize native MTProto Telegram Bot
+    telethon_client = create_telegram_client()
+    setup_bot_handlers(telethon_client)
 
-    # Register Routers
-    dp.include_router(get_main_router())
-
-    logger.info("Telegram Bot polling starting...")
+    logger.info("Connecting MTProto bot client to Telegram Data Centers...")
+    await telethon_client.start(bot_token=config.bot_token)
+    me = await telethon_client.get_me()
+    logger.info("✅ MTProto Bot successfully connected as @%s (ID: %d)", me.username, me.id)
 
     try:
-        # Start bot polling and wait
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        await telethon_client.run_until_disconnected()
     finally:
         logger.info("Initiating graceful shutdown...")
         cleanup_task.cancel()
-        await bot.session.close()
+        if telethon_client.is_connected():
+            await telethon_client.disconnect()
         await runner.cleanup()
         await close_db()
         logger.info("LCALauncher Auth Server stopped successfully.")

@@ -13,3 +13,4 @@ data/*.db-shm
 htmlcov/
 .idea/
 data/
+/test_session.session
