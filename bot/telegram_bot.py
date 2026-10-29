@@ -51,17 +51,16 @@ HELP_TEXT = (
 
 def create_telegram_client() -> TelegramClient:
     """Initialize Telethon MTProto client with optional MTProxy or SOCKS5 proxy."""
-    proxy = None
-    connection = None
+    kwargs: dict = {}
 
     # 1. Native MTProto Proxy (tg://proxy?server=...&port=...&secret=...)
     if config.mtproto_proxy_host and config.mtproto_proxy_port and config.mtproto_proxy_secret:
-        proxy = (
+        kwargs["proxy"] = (
             config.mtproto_proxy_host,
             config.mtproto_proxy_port,
             config.mtproto_proxy_secret,
         )
-        connection = ConnectionTcpMTProxyRandomizedIntermediate
+        kwargs["connection"] = ConnectionTcpMTProxyRandomizedIntermediate
         logger.info(
             "Configured native MTProto Proxy: %s:%d",
             config.mtproto_proxy_host,
@@ -72,7 +71,7 @@ def create_telegram_client() -> TelegramClient:
         parsed = urllib.parse.urlparse(config.telegram_proxy)
         scheme = parsed.scheme.lower()
         proxy_type = "socks5" if "socks5" in scheme else ("socks4" if "socks4" in scheme else "http")
-        proxy = {
+        kwargs["proxy"] = {
             "proxy_type": proxy_type,
             "addr": parsed.hostname,
             "port": parsed.port or 1080,
@@ -87,8 +86,7 @@ def create_telegram_client() -> TelegramClient:
         session=session_file,
         api_id=config.api_id,
         api_hash=config.api_hash,
-        proxy=proxy,
-        connection=connection,
+        **kwargs,
     )
     return client
 

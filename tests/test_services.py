@@ -268,6 +268,14 @@ def test_telethon_mtproto_client_creation(tmp_path, monkeypatch):
     assert client.api_hash == "0123456789abcdef0123456789abcdef"
     assert client._connection == ConnectionTcpMTProxyRandomizedIntermediate
 
+    # Also verify creation without any proxy (default connection) does not raise AssertionError
+    monkeypatch.setattr(config, "mtproto_proxy_host", "")
+    monkeypatch.setattr(config, "mtproto_proxy_port", 0)
+    monkeypatch.setattr(config, "mtproto_proxy_secret", "")
+    monkeypatch.setattr(config, "telegram_proxy", "")
+    client_no_proxy = create_telegram_client()
+    assert client_no_proxy is not None
+
 
 def test_state_manager_wizard_flow():
     """Verify state manager stores and clears multi-step FSM states."""

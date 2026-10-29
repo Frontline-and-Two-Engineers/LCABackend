@@ -4,6 +4,13 @@ import asyncio
 import logging
 import signal
 import sys
+from pathlib import Path
+
+# Ensure project root is in sys.path when executed directly as `python bot/__main__.py`
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from aiohttp import web
 
 from bot.config import config
@@ -109,12 +116,19 @@ async def main() -> None:
     setup_bot_handlers(telethon_client)
 
     logger.info("Connecting MTProto bot client to Telegram Data Centers...")
-    await telethon_client.start(bot_token=config.bot_token)
-    me = await telethon_client.get_me()
-    logger.info("✅ MTProto Bot successfully connected as @%s (ID: %d)", me.username, me.id)
-
     try:
+        await telethon_client.start(bot_token=config.bot_token)
+        me = await telethon_client.get_me()
+        logger.info("✅ MTProto Bot successfully connected as @%s (ID: %d)", me.username, me.id)
         await telethon_client.run_until_disconnected()
+    except Exception as e:
+        logger.error("❌ Failed to connect or run MTProto Telegram Bot: %s", e)
+        logger.info("HTTP API server remains active. Press Ctrl+C to terminate.")
+        try:
+            stop_event = asyncio.Event()
+            await stop_event.wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
     finally:
         logger.info("Initiating graceful shutdown...")
         cleanup_task.cancel()
