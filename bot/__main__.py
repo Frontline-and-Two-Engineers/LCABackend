@@ -18,6 +18,7 @@ from bot.db.engine import init_db, close_db, get_db_session
 from bot.api.launcher_api import create_api_app
 from bot.services.code_service import CodeService
 from bot.services.modpack_service import ModpackService
+from bot.services.channel_service import channel_service
 from bot.telegram_bot import create_telegram_client, setup_bot_handlers
 
 # Configure structured logging
@@ -114,6 +115,7 @@ async def main() -> None:
     # 5. Initialize native MTProto Telegram Bot
     telethon_client = create_telegram_client()
     setup_bot_handlers(telethon_client)
+    channel_service.set_telethon_client(telethon_client)
 
     logger.info("Connecting MTProto bot client to Telegram Data Centers...")
     try:

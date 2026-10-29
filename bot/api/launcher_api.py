@@ -12,6 +12,7 @@ from bot.services.auth_service import AuthService
 from bot.services.code_service import CodeService
 from bot.services.modpack_service import ModpackService, ModpackSecurityError
 from bot.services.skin_service import SkinService
+from bot.services.channel_service import channel_service
 from bot.services.yggdrasil_service import yggdrasil_service, to_unhyphenated_uuid
 from urllib.parse import urlparse
 
@@ -589,6 +590,54 @@ async def user_cape_direct_handler(request: web.Request) -> web.StreamResponse:
         )
 
 
+# ---------------- Channel Posts Endpoints ---------------- #
+
+
+async def channel_posts_handler(request: web.Request) -> web.Response:
+    """
+    GET /api/channel/posts
+    Returns recent channel news posts with photos, links and view count.
+    """
+    limit = 3
+    try:
+        limit = int(request.query.get("limit", "3"))
+    except ValueError:
+        pass
+    refresh = request.query.get("refresh", "0") in ("1", "true", "yes")
+
+    posts = await channel_service.get_latest_posts(limit=limit, force_refresh=refresh)
+    return web.json_response({
+        "channel": config.channel_username,
+        "posts": posts,
+    })
+
+
+async def channel_media_handler(request: web.Request) -> web.StreamResponse:
+    """
+    GET /api/channel/media/{filename}
+    Streams cached channel post media file (JPEG/PNG/WebP).
+    """
+    filename = request.match_info.get("filename", "").strip()
+    path = channel_service.get_media_path(filename)
+    if not path:
+        return web.json_response({"error": "media_not_found"}, status=404)
+
+    ext = path.suffix.lower()
+    content_type = "image/jpeg"
+    if ext == ".png":
+        content_type = "image/png"
+    elif ext == ".webp":
+        content_type = "image/webp"
+
+    return web.FileResponse(
+        path=path,
+        headers={
+            "Content-Type": content_type,
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
 def create_api_app() -> web.Application:
     """Create and configure the aiohttp Application for the launcher REST API."""
     app = web.Application()
@@ -622,5 +671,9 @@ def create_api_app() -> web.Application:
     app.router.add_get("/textures/{hash}", texture_download_handler)
     app.router.add_get("/api/skins/{username}", user_skin_direct_handler)
     app.router.add_get("/api/capes/{username}", user_cape_direct_handler)
+
+    # Channel News Posts & Media
+    app.router.add_get("/api/channel/posts", channel_posts_handler)
+    app.router.add_get("/api/channel/media/{filename}", channel_media_handler)
 
     return app

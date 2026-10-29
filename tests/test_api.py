@@ -305,3 +305,41 @@ async def test_admin_auth_security():
         assert resp3.status == 403
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_posts_and_media_endpoint(tmp_path, monkeypatch):
+    """Verify /api/channel/posts returns posts and /api/channel/media/{filename} returns cached file."""
+    test_media_dir = tmp_path / "channel_media"
+    test_media_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "channel_media_dir", test_media_dir)
+
+    # Put a mock image file
+    mock_file = test_media_dir / "test.jpg"
+    mock_file.write_bytes(b"\xFF\xD8\xFF\xE0\x00\x10JFIF")
+
+    app = create_api_app()
+    client = TestClient(TestServer(app))
+    await client.start_server()
+
+    try:
+        # 1. Fetch channel posts
+        resp = await client.get("/api/channel/posts?limit=3")
+        assert resp.status == 200
+        data = await resp.json()
+        assert "posts" in data
+        assert isinstance(data["posts"], list)
+        assert len(data["posts"]) <= 3
+
+        # 2. Fetch existing media
+        resp_media = await client.get("/api/channel/media/test.jpg")
+        assert resp_media.status == 200
+        assert resp_media.headers["Content-Type"] == "image/jpeg"
+        content = await resp_media.read()
+        assert content == b"\xFF\xD8\xFF\xE0\x00\x10JFIF"
+
+        # 3. Non-existent media -> 404
+        resp_404 = await client.get("/api/channel/media/nonexistent.jpg")
+        assert resp_404.status == 404
+    finally:
+        await client.close()

@@ -114,6 +114,14 @@ class Config:
             os.getenv("KEYS_DIR", str(BASE_DIR / "data" / "keys"))
         ).resolve()
     )
+    channel_username: str = field(
+        default_factory=lambda: os.getenv("CHANNEL_USERNAME", "lightcameraaction_mc").lstrip("@")
+    )
+    channel_media_dir: Path = field(
+        default_factory=lambda: Path(
+            os.getenv("CHANNEL_MEDIA_DIR", str(BASE_DIR / "data" / "channel_media"))
+        ).resolve()
+    )
 
     def is_admin(self, telegram_id: int) -> bool:
         """Check if the given Telegram ID has admin privileges."""
@@ -127,3 +135,4 @@ config.modpack_dir.mkdir(parents=True, exist_ok=True)
 config.skins_dir.mkdir(parents=True, exist_ok=True)
 config.capes_dir.mkdir(parents=True, exist_ok=True)
 config.keys_dir.mkdir(parents=True, exist_ok=True)
+config.channel_media_dir.mkdir(parents=True, exist_ok=True)
