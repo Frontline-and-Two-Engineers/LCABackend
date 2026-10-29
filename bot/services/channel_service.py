@@ -39,8 +39,18 @@ class ChannelService:
         self._cache_ttl: float = 60.0  # 60 seconds
 
     def set_telethon_client(self, client: Any) -> None:
-        """Assign active Telethon client for MTProto fetching."""
+        """Assign active Telethon client for MTProto and real-time event listening."""
         self._telethon_client = client
+        try:
+            from telethon import events
+
+            @client.on(events.NewMessage(chats=[config.channel_username]))
+            async def _on_channel_post(event: Any) -> None:
+                logger.info("Real-time new message received in channel @%s, updating posts cache...", config.channel_username)
+                self._cache_time = 0.0
+                await self.get_latest_posts(limit=3, force_refresh=True)
+        except Exception as e:
+            logger.debug("Could not attach channel event listener: %s", e)
 
     def get_media_path(self, filename: str) -> Optional[Path]:
         """Return path to cached media file if safe and exists."""
@@ -63,15 +73,23 @@ class ChannelService:
 
         posts: list[dict[str, Any]] = []
 
-        # 1. Try MTProto via Telethon client if connected
+        # 1. Try MTProto via Telethon client only if connected AND NOT a bot account
+        # (Telegram MTProto strictly restricts GetHistoryRequest for bot tokens)
+        can_use_telethon_history = False
         if self._telethon_client:
             try:
-                if self._telethon_client.is_connected():
-                    posts = await self._fetch_via_telethon(limit * 3)
-            except Exception as e:
-                logger.warning("Failed to fetch posts via Telethon MTProto: %s. Falling back to HTTP.", e)
+                if self._telethon_client.is_connected() and not (await self._telethon_client.is_bot()):
+                    can_use_telethon_history = True
+            except Exception:
+                can_use_telethon_history = False
 
-        # 2. Fallback to web scraping of t.me/s/{channel}
+        if can_use_telethon_history:
+            try:
+                posts = await self._fetch_via_telethon(limit * 3)
+            except Exception as e:
+                logger.debug("Telethon history fetch skipped or failed: %s", e)
+
+        # 2. Web scraping of t.me/s/{channel} (primary and reliable for bot accounts)
         if not posts:
             try:
                 posts = await self._fetch_via_web(limit * 3)
