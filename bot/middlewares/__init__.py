@@ -1,3 +1,3 @@
-from bot.middlewares.rate_limit import bot_code_limiter
+from bot.middlewares.rate_limit import CodeRateLimiter, bot_code_limiter
 
-__all__ = ["bot_code_limiter"]
+__all__ = ["CodeRateLimiter", "bot_code_limiter"]

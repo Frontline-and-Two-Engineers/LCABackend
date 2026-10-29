@@ -1,10 +1,7 @@
-"""Rate limiting middleware for aiogram 3.x."""
+"""Rate limiting utility for bot commands and auth code attempts."""
 
 import time
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict
-from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
 
 
 class CodeRateLimiter:
