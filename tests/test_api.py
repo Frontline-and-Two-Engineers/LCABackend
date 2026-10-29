@@ -341,5 +341,15 @@ async def test_channel_posts_and_media_endpoint(tmp_path, monkeypatch):
         # 3. Non-existent media -> 404
         resp_404 = await client.get("/api/channel/media/nonexistent.jpg")
         assert resp_404.status == 404
+
+        # 4. Verify cleanup_old_media deletes obsolete files
+        extra_file = test_media_dir / "999.jpg"
+        extra_file.write_bytes(b"old_data")
+        assert extra_file.exists()
+
+        from bot.services.channel_service import channel_service
+        deleted = channel_service.cleanup_old_media(keep_ids={123})
+        assert not extra_file.exists()
+        assert deleted >= 1
     finally:
         await client.close()

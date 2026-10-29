@@ -40,6 +40,11 @@ async def periodic_code_cleanup() -> None:
                 deleted = await CodeService.cleanup_expired_codes(session)
                 if deleted > 0:
                     logger.info("Background cleaner removed %d expired codes.", deleted)
+
+            # Purge obsolete channel media cache
+            media_deleted = channel_service.cleanup_old_media()
+            if media_deleted > 0:
+                logger.info("Background cleaner removed %d old channel media files.", media_deleted)
         except asyncio.CancelledError:
             logger.info("Background cleanup task cancelled.")
             break

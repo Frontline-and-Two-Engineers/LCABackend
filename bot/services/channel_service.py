@@ -62,6 +62,44 @@ class ChannelService:
             return None
         return media_path
 
+    def cleanup_old_media(self, keep_ids: Optional[set[int]] = None) -> int:
+        """
+        Delete cached media files that are no longer associated with current active posts.
+        Returns the number of deleted files.
+        """
+        if keep_ids is None:
+            keep_ids = {p["id"] for p in self._cached_posts if p.get("id")}
+
+        deleted_count = 0
+        if not config.channel_media_dir.exists():
+            return 0
+
+        try:
+            for file_path in config.channel_media_dir.iterdir():
+                if not file_path.is_file() or file_path.name.startswith("."):
+                    continue
+
+                stem = file_path.stem
+                try:
+                    post_id = int(stem)
+                    if post_id not in keep_ids:
+                        file_path.unlink(missing_ok=True)
+                        deleted_count += 1
+                        logger.info("Removed old cached media: %s", file_path.name)
+                except ValueError:
+                    # Non-numeric media file older than 24h
+                    age_seconds = time.time() - file_path.stat().st_mtime
+                    if age_seconds > 86400:
+                        file_path.unlink(missing_ok=True)
+                        deleted_count += 1
+                        logger.info("Removed stale media: %s", file_path.name)
+        except Exception as e:
+            logger.error("Error during media cache cleanup: %s", e)
+
+        if deleted_count > 0:
+            logger.info("Media cache cleanup: removed %d old file(s)", deleted_count)
+        return deleted_count
+
     async def get_latest_posts(self, limit: int = 3, force_refresh: bool = False) -> list[dict[str, Any]]:
         """
         Fetch latest channel posts (newest first).
@@ -102,6 +140,11 @@ class ChannelService:
             self._cached_posts = posts
             self._cache_time = now
             logger.info("Successfully refreshed %d channel posts for @%s", len(posts), config.channel_username)
+
+            # Automatically delete old media files that are no longer part of active posts
+            active_ids = {p["id"] for p in posts[:limit]}
+            self.cleanup_old_media(active_ids)
+
             return self._cached_posts[:limit]
 
         # If fetch completely failed, return existing cache even if expired
