@@ -3,6 +3,7 @@
 import io
 import logging
 import re
+import ssl
 import time
 from datetime import datetime
 from html import unescape
@@ -193,6 +194,38 @@ class ChannelService:
 
         return results
 
+    async def _safe_http_get_text(self, url: str, headers: dict[str, str]) -> Optional[str]:
+        """Fetch text via HTTP GET with automatic fallback if SSL certificate verification fails."""
+        # 1. Try with verified SSL if enabled
+        if config.telegram_verify_ssl:
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return await resp.text()
+                        logger.warning("Telegram web returned status %d for %s", resp.status, url)
+                        return None
+            except (aiohttp.ClientSSLError, aiohttp.ClientConnectorCertificateError, ssl.SSLError) as ssl_err:
+                logger.warning(
+                    "SSL certificate verification failed for %s (%s). Retrying with unverified SSL...",
+                    url,
+                    ssl_err,
+                )
+            except Exception as e:
+                logger.error("HTTP error fetching %s: %s", url, e)
+                return None
+
+        # 2. Fallback without SSL verification (e.g. self-signed root certificate, corporate proxy or DPI)
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        return await resp.text()
+                    logger.warning("Telegram web returned status %d for %s (ssl=False)", resp.status, url)
+        except Exception as e:
+            logger.error("Failed to fetch %s (ssl=False): %s", url, e)
+        return None
+
     async def _fetch_via_web(self, max_fetch: int = 15) -> list[dict[str, Any]]:
         """Fetch posts via Telegram public channel web preview (https://t.me/s/{channel})."""
         url = f"https://t.me/s/{config.channel_username}"
@@ -201,12 +234,9 @@ class ChannelService:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    logger.warning("Telegram web returned status %d for %s", resp.status, url)
-                    return []
-                html = await resp.text()
+        html = await self._safe_http_get_text(url, headers)
+        if not html:
+            return []
 
         msg_blocks = re.findall(
             r"(<div class=\"tgme_widget_message[^\"]*\"[^>]*data-post=\"([^\"]+)\"[\s\S]*?)(?=<div class=\"tgme_widget_message[^\"]*\"[^>]*data-post=|$)",
@@ -287,12 +317,33 @@ class ChannelService:
         return results
 
     async def _download_file(self, url: str, dest: Path) -> None:
-        """Download remote image file into destination path."""
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    content = await resp.read()
-                    dest.write_bytes(content)
+        """Download remote image file into destination path with SSL fallback."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        if config.telegram_verify_ssl:
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            dest.write_bytes(content)
+                            return
+            except (aiohttp.ClientSSLError, aiohttp.ClientConnectorCertificateError, ssl.SSLError):
+                logger.debug("SSL verification failed downloading image from %s, retrying with ssl=False...", url)
+            except Exception as err:
+                logger.warning("Could not download media from %s: %s", url, err)
+                return
+
+        # Fallback with ssl=False
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        dest.write_bytes(content)
+        except Exception as err:
+            logger.warning("Failed to download media from %s (ssl=False): %s", url, err)
 
 
 channel_service = ChannelService()

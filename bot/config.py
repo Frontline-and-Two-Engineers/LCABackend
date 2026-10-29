@@ -50,6 +50,9 @@ class Config:
     telegram_api_server: str = field(
         default_factory=lambda: os.getenv("TELEGRAM_API_SERVER", "").strip().rstrip("/")
     )
+    telegram_verify_ssl: bool = field(
+        default_factory=lambda: os.getenv("TELEGRAM_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+    )
 
     # Storage Directories
     data_dir: Path = field(default_factory=lambda: (BASE_DIR / "data").resolve())
