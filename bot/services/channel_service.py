@@ -47,9 +47,17 @@ class ChannelService:
 
             @client.on(events.NewMessage(chats=[config.channel_username]))
             async def _on_channel_post(event: Any) -> None:
-                logger.info("Real-time new message received in channel @%s, updating posts cache...", config.channel_username)
-                self._cache_time = 0.0
-                await self.get_latest_posts(limit=3, force_refresh=True)
+                logger.info("Real-time new message received in channel @%s via MTProto", config.channel_username)
+                try:
+                    post = await self._message_to_post(event.message)
+                    if post:
+                        # Prepend or update in cache
+                        self._cached_posts = [p for p in self._cached_posts if p["id"] != post["id"]]
+                        self._cached_posts.insert(0, post)
+                        self._cached_posts.sort(key=lambda p: p["id"], reverse=True)
+                        self._cache_time = time.time()
+                except Exception as err:
+                    logger.warning("Could not process real-time channel message: %s", err)
         except Exception as e:
             logger.debug("Could not attach channel event listener: %s", e)
 
@@ -112,23 +120,21 @@ class ChannelService:
 
         posts: list[dict[str, Any]] = []
 
-        # 1. Try MTProto via Telethon client only if connected AND NOT a bot account
-        # (Telegram MTProto strictly restricts GetHistoryRequest for bot tokens)
-        can_use_telethon_history = False
+        # 1. Try MTProto via Telethon client directly
         if self._telethon_client:
             try:
-                if self._telethon_client.is_connected() and not (await self._telethon_client.is_bot()):
-                    can_use_telethon_history = True
-            except Exception:
-                can_use_telethon_history = False
-
-        if can_use_telethon_history:
-            try:
-                posts = await self._fetch_via_telethon(limit * 3)
+                if self._telethon_client.is_connected():
+                    posts = await self._fetch_via_telethon(limit * 3)
             except Exception as e:
-                logger.debug("Telethon history fetch skipped or failed: %s", e)
+                logger.warning(
+                    "Telethon MTProto history fetch failed for @%s: %s "
+                    "(Tip: Add the bot as an Administrator to @%s to allow reading posts via MTProto without web requests).",
+                    config.channel_username,
+                    e,
+                    config.channel_username,
+                )
 
-        # 2. Web scraping of t.me/s/{channel} (primary and reliable for bot accounts)
+        # 2. Web scraping of t.me/s/{channel} (fallback if MTProto history not available)
         if not posts:
             try:
                 posts = await self._fetch_via_web(limit * 3)
@@ -151,46 +157,54 @@ class ChannelService:
         # If fetch completely failed, return existing cache even if expired
         return self._cached_posts[:limit]
 
+    async def _message_to_post(self, msg: Any) -> Optional[dict[str, Any]]:
+        """Convert a Telethon Message object to a channel post dictionary."""
+        # Skip service messages
+        if getattr(msg, "action", None) is not None:
+            return None
+
+        raw_text = getattr(msg, "text", None) or ""
+        # Filter service changes
+        if raw_text.startswith("Channel photo updated") or raw_text.startswith("Channel name was changed"):
+            return None
+
+        has_photo = bool(getattr(msg, "photo", None))
+        if not raw_text and not has_photo:
+            return None
+
+        image_url: Optional[str] = None
+        if has_photo and self._telethon_client:
+            filename = f"{msg.id}.jpg"
+            dest_path = config.channel_media_dir / filename
+            if not dest_path.exists():
+                try:
+                    await self._telethon_client.download_media(msg.photo, file=str(dest_path))
+                except Exception as err:
+                    logger.warning("Could not download Telethon media for post %d: %s", msg.id, err)
+            if dest_path.exists():
+                image_url = f"{config.api_base_url}/api/channel/media/{filename}"
+
+        date_val = getattr(msg, "date", None)
+        date_str = date_val.isoformat() if date_val else ""
+        return {
+            "id": msg.id,
+            "date": date_str,
+            "formatted_date": format_ru_date(date_str),
+            "text": raw_text.strip(),
+            "image_url": image_url,
+            "views": getattr(msg, "views", None) or 0,
+            "link": f"https://t.me/{config.channel_username}/{msg.id}",
+        }
+
     async def _fetch_via_telethon(self, max_fetch: int = 10) -> list[dict[str, Any]]:
         """Fetch posts directly from Telegram MTProto."""
         results: list[dict[str, Any]] = []
         channel = await self._telethon_client.get_entity(config.channel_username)
 
         async for msg in self._telethon_client.iter_messages(channel, limit=max_fetch):
-            # Skip service messages
-            if getattr(msg, "action", None) is not None:
-                continue
-
-            raw_text = msg.text or ""
-            # Filter service changes
-            if raw_text.startswith("Channel photo updated") or raw_text.startswith("Channel name was changed"):
-                continue
-
-            if not raw_text and not msg.photo:
-                continue
-
-            image_url: Optional[str] = None
-            if msg.photo:
-                filename = f"{msg.id}.jpg"
-                dest_path = config.channel_media_dir / filename
-                if not dest_path.exists():
-                    try:
-                        await self._telethon_client.download_media(msg.photo, file=str(dest_path))
-                    except Exception as err:
-                        logger.warning("Could not download Telethon media for post %d: %s", msg.id, err)
-                if dest_path.exists():
-                    image_url = f"{config.api_base_url}/api/channel/media/{filename}"
-
-            date_str = msg.date.isoformat() if msg.date else ""
-            results.append({
-                "id": msg.id,
-                "date": date_str,
-                "formatted_date": format_ru_date(date_str),
-                "text": raw_text.strip(),
-                "image_url": image_url,
-                "views": getattr(msg, "views", None) or 0,
-                "link": f"https://t.me/{config.channel_username}/{msg.id}",
-            })
+            post = await self._message_to_post(msg)
+            if post:
+                results.append(post)
 
         return results
 
