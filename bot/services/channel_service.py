@@ -1,6 +1,7 @@
 """Service for fetching and caching news posts from the Telegram channel."""
 
 import io
+import json
 import logging
 import re
 import ssl
@@ -38,6 +39,32 @@ class ChannelService:
         self._cached_posts: list[dict[str, Any]] = []
         self._cache_time: float = 0.0
         self._cache_ttl: float = 60.0  # 60 seconds
+        self._cache_file: Path = config.data_dir / "channel_posts_cache.json"
+        self._load_disk_cache()
+
+    def _load_disk_cache(self) -> None:
+        """Load persisted channel posts from disk on startup."""
+        try:
+            if self._cache_file.exists():
+                content = self._cache_file.read_text(encoding="utf-8")
+                data = json.loads(content)
+                if isinstance(data, list) and data:
+                    self._cached_posts = data
+                    self._cache_time = time.time()
+                    logger.info("Loaded %d cached channel posts from %s", len(data), self._cache_file.name)
+        except Exception as e:
+            logger.warning("Could not read disk cache for channel posts: %s", e)
+
+    def _save_disk_cache(self) -> None:
+        """Save active posts cache to disk."""
+        try:
+            self._cache_file.parent.mkdir(parents=True, exist_ok=True)
+            self._cache_file.write_text(
+                json.dumps(self._cached_posts, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("Could not persist channel posts cache: %s", e)
 
     def set_telethon_client(self, client: Any) -> None:
         """Assign active Telethon client for MTProto and real-time event listening."""
@@ -56,6 +83,7 @@ class ChannelService:
                         self._cached_posts.insert(0, post)
                         self._cached_posts.sort(key=lambda p: p["id"], reverse=True)
                         self._cache_time = time.time()
+                        self._save_disk_cache()
                 except Exception as err:
                     logger.warning("Could not process real-time channel message: %s", err)
         except Exception as e:
@@ -146,6 +174,7 @@ class ChannelService:
             posts.sort(key=lambda p: p["id"], reverse=True)
             self._cached_posts = posts
             self._cache_time = now
+            self._save_disk_cache()
             logger.info("Successfully refreshed %d channel posts for @%s", len(posts), config.channel_username)
 
             # Automatically delete old media files that are no longer part of active posts
@@ -156,6 +185,53 @@ class ChannelService:
 
         # If fetch completely failed, return existing cache even if expired
         return self._cached_posts[:limit]
+
+    async def _find_latest_message_id(self, channel: Any) -> int:
+        """
+        Find the latest message ID in channel using MTProto calls permitted for bot tokens.
+        Never calls GetHistoryRequest.
+        """
+        from telethon.tl.functions.channels import GetFullChannelRequest
+
+        # 1. Try GetFullChannelRequest for metadata
+        try:
+            full = await self._telethon_client(GetFullChannelRequest(channel))
+            max_id = getattr(full.full_chat, "read_inbox_max_id", 0) or 0
+            if max_id > 0:
+                return max_id
+            pts = getattr(full.full_chat, "pts", 0) or 0
+            if pts > 0:
+                return min(pts, 100000)
+        except Exception as e:
+            logger.debug("GetFullChannelRequest skipped: %s", e)
+
+        # 2. Check disk cache for highest known ID
+        known_max = 0
+        if self._cached_posts:
+            known_max = max(p["id"] for p in self._cached_posts if "id" in p)
+
+        # 3. Probe with a single batch of candidate IDs via GetMessagesRequest (allowed for bots)
+        candidates = [1, 5, 10, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+        if known_max > 0:
+            candidates.extend([known_max, known_max + 5, known_max + 15, known_max + 30])
+        candidates = sorted(set(candidates))
+
+        try:
+            msgs = await self._telethon_client.get_messages(channel, ids=candidates)
+            existing_ids = [m.id for m in msgs if m is not None and getattr(m, "id", None)]
+            if existing_ids:
+                highest = max(existing_ids)
+                # Check IDs immediately following highest to locate the exact newest message
+                probe_above = list(range(highest + 1, highest + 40))
+                msgs_above = await self._telethon_client.get_messages(channel, ids=probe_above)
+                existing_above = [m.id for m in msgs_above if m is not None and getattr(m, "id", None)]
+                if existing_above:
+                    return max(existing_above)
+                return highest
+        except Exception as e:
+            logger.warning("Message ID probe failed: %s", e)
+
+        return known_max or 1
 
     async def _message_to_post(self, msg: Any) -> Optional[dict[str, Any]]:
         """Convert a Telethon Message object to a channel post dictionary."""
@@ -197,14 +273,27 @@ class ChannelService:
         }
 
     async def _fetch_via_telethon(self, max_fetch: int = 10) -> list[dict[str, Any]]:
-        """Fetch posts directly from Telegram MTProto."""
+        """Fetch posts directly from Telegram MTProto using GetMessagesRequest by ID (permitted for bots)."""
         results: list[dict[str, Any]] = []
         channel = await self._telethon_client.get_entity(config.channel_username)
 
-        async for msg in self._telethon_client.iter_messages(channel, limit=max_fetch):
+        top_id = await self._find_latest_message_id(channel)
+        if top_id <= 0:
+            return []
+
+        # Request a window of IDs up to top_id in a single GetMessagesRequest call
+        window_size = max(max_fetch * 4, 30)
+        id_window = list(range(max(1, top_id - window_size), top_id + 1))
+        messages = await self._telethon_client.get_messages(channel, ids=id_window)
+
+        for msg in reversed(messages):
+            if msg is None:
+                continue
             post = await self._message_to_post(msg)
             if post:
                 results.append(post)
+                if len(results) >= max_fetch:
+                    break
 
         return results
 
